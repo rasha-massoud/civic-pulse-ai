@@ -1,25 +1,28 @@
 # infra/aws
 
-Actual AWS deployment bits, separate from the root `docker-compose.yml`
-(which is local-dev only). This is plain scripts + JSON configs, not
+Actual AWS deployment bits. This is plain scripts + JSON configs, not
 Terraform/CDK — intentional for a 10-week MVP timeline. If the
 project continues past the capstone, this is the folder to replace with
 real IaC.
 
-## Deployment: single EC2 instance + docker compose
+## Deployment: single EC2 instance, native installs + systemd
 
-The whole stack (Postgres, Redis, backend, dashboard) runs as containers
-on one EC2 instance via the root `docker-compose.yml`, pointed at a real
-`.env`. This is a demo-appropriate setup, not how you'd run this in
-production long-term.
+The whole stack (Postgres, Redis, backend, dashboard) runs natively on
+one EC2 instance. Postgres and Redis are installed via apt;
+the backend runs via `uvicorn` and the dashboard's production build is
+served as a static site, each wired up as its own systemd service so
+they start on boot and restart on crash. This is a demo-appropriate
+setup, not how you'd run this in production long-term.
 
 1. Launch an EC2 instance (Ubuntu 22.04, t3.small or larger) in a VPC
-   with a security group allowing inbound 22, 80/443, and 8000.
+   with a security group allowing inbound 22, 80/443, 8000, and 5173.
 2. Attach an IAM instance role with S3 read/write on the media bucket
    (see `s3/bucket-policy.json`).
 3. Run `ec2/setup.sh` on the instance (as user-data on launch, or SSH in
-   and run it manually) — it installs Docker, pulls the repo, and brings
-   the stack up.
+   and run it manually) — it installs Postgres, Redis, Python, and
+   Node.js directly via apt, pulls the repo, installs backend/dashboard
+   dependencies, builds the dashboard, and sets up the
+   `civicpulse-backend` and `civicpulse-dashboard` systemd services.
 4. Point the WhatsApp Business API webhook (Twilio) at the instance's
    public URL.
 
