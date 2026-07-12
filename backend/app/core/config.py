@@ -9,6 +9,12 @@ class Settings(BaseSettings):
     APP_NAME: str = "CivicPulse AI"
     API_V1_PREFIX: str = "/api/v1"
     SECRET_KEY: str = "changeme-generate-a-random-secret"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 12
+
+    # --- Local dev admin seed (single-admin-role MVP, no RBAC) ---
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = "changeme123"
 
     # --- Database (PostgreSQL) ---
     DATABASE_URL: str = "postgresql+psycopg2://postgres:changeme@localhost:5432/civicpulse"

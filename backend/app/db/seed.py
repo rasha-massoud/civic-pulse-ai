@@ -8,18 +8,15 @@ Usage (from backend/, with your venv activated):
 
 Safe to re-run: it wipes existing rows in these tables first
 (in FK-safe order) before inserting fresh seed data.
-
-Note: does NOT seed a User/admin row — app/core/security.py (password
-hashing) isn't implemented yet. Once auth is built, add a small block
-here to create an admin user via whatever hashing function that module
-exposes.
 """
 
 from datetime import datetime, timedelta, timezone
 
+from app.core.config import settings
+from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
-from app.models import Issue, IssueStatus, Report, Task
+from app.models import Issue, IssueStatus, Report, Task, User
 
 
 def now_minus(days: int, hours: int = 0) -> datetime:
@@ -30,11 +27,16 @@ def run():
     db = SessionLocal()
 
     try:
-        print("Clearing existing data (tasks, reports, issues)...")
+        print("Clearing existing data (tasks, reports, issues, users)...")
         db.query(Task).delete()
         db.query(Report).delete()
         db.query(Issue).delete()
+        db.query(User).delete()
         db.commit()
+
+        # --- Admin user ---
+        print(f"Creating admin user '{settings.ADMIN_USERNAME}'...")
+        db.add(User(username=settings.ADMIN_USERNAME, hashed_password=hash_password(settings.ADMIN_PASSWORD)))
 
         # --- Issues ---
         print("Creating issues...")
@@ -273,19 +275,22 @@ def run():
         ]
         db.add_all(reports)
 
-        # --- Tasks (only for the in-progress issue, per cosmetic field-worker design) ---
+        # --- Tasks (only for the in-progress issue) ---
+        # assigned_to is a department string, not an individual field worker
+        # (departments have no accounts/logins in this MVP — see Task model).
         print("Creating tasks...")
 
         task_bourj_hammoud = Task(
             issue_id=issue_bourj_hammoud.id,
-            assigned_to="Ahmad Khalil",
+            assigned_to="Waste Management Department",
             status="assigned",
             created_at=now_minus(2),
         )
         db.add(task_bourj_hammoud)
 
         db.commit()
-        print("Seed complete: 6 issues, 10 reports, 1 task.")
+        print("Seed complete: 6 issues, 10 reports, 1 task, 1 admin user.")
+        print(f"Admin login: username='{settings.ADMIN_USERNAME}' password='{settings.ADMIN_PASSWORD}'")
 
     except Exception:
         db.rollback()

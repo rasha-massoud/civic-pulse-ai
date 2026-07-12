@@ -13,8 +13,9 @@ if TYPE_CHECKING:
 class Task(Base):
     """Field work assigned by an admin against an Issue.
 
-    `assigned_to` is a plain string, not a FK — field workers have no
-    accounts or logins in this MVP (see CLAUDE.md).
+    `assigned_to` is a plain string naming the responsible municipal
+    department (e.g. "Roads & Maintenance Department"), not a FK —
+    departments have no accounts or logins in this MVP.
     """
 
     __tablename__ = "tasks"
