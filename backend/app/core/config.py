@@ -1,8 +1,13 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # --- App ---
     ENV: str = "development"
@@ -10,7 +15,8 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
     SECRET_KEY: str = "changeme-generate-a-random-secret"
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 12
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    CORS_ORIGINS: str = "http://localhost:5173"
 
     # --- Local dev admin seed (single-admin-role MVP, no RBAC) ---
     ADMIN_USERNAME: str = "admin"
@@ -51,6 +57,17 @@ class Settings(BaseSettings):
     # --- Maps (Google Maps API / Mapbox) ---
     MAPS_PROVIDER: str = "mapbox"
     MAPS_API_KEY: str = ""
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _strip_cors_origins(cls, value: object) -> str:
+        if value is None:
+            return "http://localhost:5173"
+        return str(value).strip()
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
 
 settings = Settings()

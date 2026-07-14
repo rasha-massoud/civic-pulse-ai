@@ -9,6 +9,7 @@ import {
 } from "@/features/issues/categoryConfig";
 import { getLatestTask } from "@/features/issues/issueView";
 import { createTask } from "@/api/tasks";
+import { getIssue } from "@/api/issues";
 
 interface TaskBoardProps {
   issue: IssueDTO;
@@ -30,8 +31,9 @@ export default function TaskBoard({ issue, onAssigned }: TaskBoardProps) {
     setAssigning(true);
     setError(null);
     try {
-      const task = await createTask(issue.id, dept);
-      onAssigned(issue.id, { ...issue, tasks: [...issue.tasks, task] });
+      await createTask(issue.id, dept);
+      const updatedIssue = await getIssue(issue.id);
+      onAssigned(issue.id, updatedIssue);
       setOpen(false);
     } catch {
       setError("Couldn't save, please try again.");

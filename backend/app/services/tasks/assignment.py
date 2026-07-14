@@ -4,6 +4,10 @@ from app.models.issue import Issue, IssueStatus
 from app.models.task import Task
 
 
+def get_task(db: Session, task_id: int) -> Task | None:
+    return db.get(Task, task_id)
+
+
 def create_task(db: Session, issue: Issue, assigned_to: str) -> Task:
     task = Task(issue_id=issue.id, assigned_to=assigned_to)
     db.add(task)

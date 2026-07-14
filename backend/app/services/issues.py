@@ -33,5 +33,7 @@ def get_issue(db: Session, issue_id: int) -> Issue | None:
 def update_issue_status(db: Session, issue: Issue, status: IssueStatus) -> Issue:
     issue.status = status
     db.commit()
-    db.refresh(issue)
-    return issue
+    refreshed = get_issue(db, issue.id)
+    if refreshed is None:
+        raise RuntimeError(f"Issue {issue.id} disappeared after status update")
+    return refreshed

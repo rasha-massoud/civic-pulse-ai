@@ -17,7 +17,8 @@ export function getDisplayStatus(status: IssueStatus): DisplayStatus {
 }
 
 export function isUrgent(severity: string): boolean {
-  return severity === "critical" || severity === "high";
+  const normalized = severity.trim().toLowerCase();
+  return normalized === "critical" || normalized === "high";
 }
 
 export function getTicketNo(id: number): string {
