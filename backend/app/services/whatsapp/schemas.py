@@ -32,6 +32,7 @@ class WhatsAppSession(BaseModel):
     issue_type: Optional[str] = None
     description: Optional[str] = None
     location_text: Optional[str] = None
+    # Compatibility: stores Meta media IDs as "meta:{id}" until S3 media download exists.
     media_urls: list[str] = Field(default_factory=list)
 
 
@@ -42,19 +43,8 @@ class WhatsAppReportData(BaseModel):
     issue_type: str
     description: str
     location_text: str
+    # Compatibility field name kept for reports.py / DB photo_url mapping.
     media_urls: list[str] = Field(default_factory=list)
     language: str
     status: str = "pending_review"
     source: str = "whatsapp"
-
-
-class TwilioWebhookPayload(BaseModel):
-    """Normalized Twilio WhatsApp webhook form fields."""
-
-    from_number: str = Field(alias="From")
-    body: str = ""
-    num_media: int = 0
-    media_url: Optional[str] = None
-    media_content_type: Optional[str] = None
-
-    model_config = {"populate_by_name": True}

@@ -56,14 +56,14 @@ MESSAGES = {
             "إذا فيكن، حدّدوا النوع (حفرة، زبالة، إنارة، تسريب مياه، ضرر بالطريق)."
         ),
     },
-    "voice_not_supported": {
+    "voice_unintelligible": {
         "en": (
-            "Voice messages will be supported soon. "
-            "For now, please type your message or send a photo."
+            "I couldn't understand that voice message. "
+            "Please try recording it again or type your message."
         ),
         "ar": (
-            "الرسائل الصوتية رح تكون مدعومة قريباً. "
-            "حالياً، من فضلك اكتب رسالتك أو أرسل صورة."
+            "ما قدرت افهم الرسالة الصوتية. "
+            "جرّب ابعتها مرة تانية أو اكتب الرسالة."
         ),
     },
     "confirm_prompt": {
@@ -88,6 +88,11 @@ MESSAGES = {
 def _msg(key: str, language: SupportedLanguage, **kwargs: str) -> str:
     text = MESSAGES[key][language.value]
     return text.format(**kwargs) if kwargs else text
+
+
+def voice_retry_message(language: Optional[SupportedLanguage] = None) -> str:
+    """Citizen-facing reply when voice download/transcription fails or is empty."""
+    return _msg("voice_unintelligible", language or SupportedLanguage.EN)
 
 
 def create_report_from_whatsapp(data: WhatsAppReportData) -> str:
@@ -118,25 +123,32 @@ class WhatsAppConversationService:
         self,
         phone: str,
         body: str,
-        num_media: int = 0,
-        media_url: Optional[str] = None,
+        media_id: Optional[str] = None,
         media_content_type: Optional[str] = None,
+        location_text: Optional[str] = None,
     ) -> str:
         """Process one inbound message and return the reply text."""
         try:
             text = (body or "").strip()
             language = detect_language(text) if text else SupportedLanguage.EN
 
-            if media_content_type and media_content_type.startswith("audio/"):
-                session = self._get_or_create_session(phone, language)
-                return _msg("voice_not_supported", session.language)
-
             session = self._get_or_create_session(phone, language)
             if text:
                 session.language = detect_language(text)
 
-            if num_media > 0 and media_url:
-                session.media_urls.append(media_url)
+            if location_text and location_text.strip():
+                session.location_text = location_text.strip()
+
+            # Only treat image media IDs as photo attachments (not voice notes).
+            if media_id and media_content_type and media_content_type.startswith("image/"):
+                media_ref = f"meta:{media_id}"
+                if media_ref not in session.media_urls:
+                    session.media_urls.append(media_ref)
+            elif media_id and not media_content_type:
+                # Image caption/media without mime still allowed for photo step.
+                media_ref = f"meta:{media_id}"
+                if media_ref not in session.media_urls:
+                    session.media_urls.append(media_ref)
 
             reply = self._advance(session, text)
             self.store.set(phone, session)
@@ -197,6 +209,10 @@ class WhatsAppConversationService:
         return self._request_missing_fields(session)
 
     def _handle_location_step(self, session: WhatsAppSession, text: str) -> str:
+        # Native WhatsApp location may already have been applied in handle_message.
+        if session.location_text:
+            return self._request_missing_fields(session)
+
         if not text:
             return _msg("ask_location", session.language)
 

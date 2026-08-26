@@ -59,6 +59,12 @@ python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
 
+echo ">>> Preparing Whisper model cache (REQUIRED before API start — do not skip)"
+echo "    CPU: WHISPER_DEVICE=cpu WHISPER_COMPUTE_TYPE=int8"
+echo "    GPU: WHISPER_DEVICE=cuda WHISPER_COMPUTE_TYPE=float16 (needs NVIDIA driver + CUDA CTranslate2)"
+echo "    If cuda is set but unavailable, prepare_whisper fails unless WHISPER_ALLOW_CPU_FALLBACK=true"
+.venv/bin/python -m app.services.ai.prepare_whisper
+
 echo ">>> Running database migrations"
 .venv/bin/alembic upgrade head
 

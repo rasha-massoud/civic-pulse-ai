@@ -35,8 +35,16 @@ ISSUE_TYPE_TO_SEVERITY: dict[str, str] = {
 
 
 def normalize_phone(phone: str) -> str:
-    """Strip Twilio's whatsapp: prefix for storage."""
-    return phone.removeprefix("whatsapp:").strip()
+    """Normalize a WhatsApp sender phone for database storage.
+
+    Meta Cloud API sends digits (e.g. 96170123456). Ensure a leading '+' for
+    consistent storage across intakes.
+    """
+    cleaned = (phone or "").strip()
+    if cleaned.startswith("+"):
+        return cleaned
+    digits = "".join(ch for ch in cleaned if ch.isdigit())
+    return f"+{digits}" if digits else cleaned
 
 
 def map_issue_type_to_category(issue_type: str) -> str:

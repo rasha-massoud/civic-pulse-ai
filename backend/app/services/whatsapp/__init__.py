@@ -1,13 +1,13 @@
-"""WhatsApp intake service for CivicPulse AI (Twilio)."""
+"""WhatsApp intake service for CivicPulse AI (Meta Cloud API)."""
 
-from app.services.whatsapp.router import router
 from app.services.whatsapp.service import (
     WhatsAppConversationService,
     create_report_from_whatsapp,
+    voice_retry_message,
 )
 
 __all__ = [
-    "router",
     "WhatsAppConversationService",
     "create_report_from_whatsapp",
+    "voice_retry_message",
 ]
