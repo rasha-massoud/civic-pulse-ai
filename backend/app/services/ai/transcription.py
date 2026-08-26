@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from app.core.config import settings
 
@@ -16,6 +17,9 @@ _model_lock = threading.Lock()
 _load_error: Optional[str] = None
 _effective_device: Optional[str] = None
 _effective_compute_type: Optional[str] = None
+
+# Below this duration, VAD often strips WhatsApp-length speech — skip VAD.
+_SHORT_AUDIO_VAD_SECONDS = 2.0
 
 
 class CudaUnavailableError(RuntimeError):
@@ -44,6 +48,15 @@ def whisper_compute_type() -> str:
 def whisper_download_root() -> Optional[str]:
     root = (settings.HF_HOME or "").strip()
     return root or None
+
+
+def whisper_beam_size() -> int:
+    return max(1, int(settings.WHISPER_BEAM_SIZE or 5))
+
+
+def whisper_initial_prompt() -> Optional[str]:
+    prompt = (settings.WHISPER_INITIAL_PROMPT or "").strip()
+    return prompt or None
 
 
 def probe_cuda() -> dict:
@@ -136,7 +149,7 @@ def is_whisper_ready() -> bool:
 
 
 def get_whisper_status() -> dict:
-    """Readiness snapshot for health endpoints (no secrets)."""
+    """Readiness snapshot for health endpoints (no secrets / no prompt text)."""
     cuda = probe_cuda()
     requested_device = whisper_device()
     return {
@@ -146,6 +159,10 @@ def get_whisper_status() -> dict:
         "device": _effective_device or requested_device,
         "requested_compute_type": whisper_compute_type(),
         "compute_type": _effective_compute_type or whisper_compute_type(),
+        "language_hint": (settings.WHISPER_LANGUAGE_HINT or "auto").strip() or "auto",
+        "beam_size": whisper_beam_size(),
+        "vad_filter": bool(settings.WHISPER_VAD_FILTER),
+        "has_initial_prompt": whisper_initial_prompt() is not None,
         "local_files_only": bool(settings.WHISPER_LOCAL_FILES_ONLY),
         "allow_cpu_fallback": bool(settings.WHISPER_ALLOW_CPU_FALLBACK),
         "cuda": {
@@ -264,29 +281,105 @@ def reset_whisper_model() -> None:
 
 
 def _language_arg() -> Optional[str]:
+    """Return Whisper language code, or None for auto-detect.
+
+    WHISPER_LANGUAGE_HINT=ar → language=\"ar\" (explicit Arabic, no translate).
+    """
     hint = (settings.WHISPER_LANGUAGE_HINT or "auto").strip().lower()
     if not hint or hint == "auto":
         return None
-    return hint
+    # Normalize common aliases to Whisper codes.
+    aliases = {
+        "arabic": "ar",
+        "ara": "ar",
+        "en": "en",
+        "english": "en",
+    }
+    return aliases.get(hint, hint)
+
+
+def audio_duration_seconds(file_path: str) -> Optional[float]:
+    """Best-effort audio duration in seconds (None if unavailable)."""
+    try:
+        import av
+
+        with av.open(file_path) as container:
+            stream = next((s for s in container.streams if s.type == "audio"), None)
+            if (
+                stream is not None
+                and stream.duration is not None
+                and stream.time_base is not None
+            ):
+                return float(stream.duration * stream.time_base)
+            if container.duration is not None:
+                return float(container.duration) / 1_000_000.0
+    except Exception:
+        return None
+    return None
+
+
+def build_transcribe_kwargs(file_path: str) -> dict[str, Any]:
+    """Decode options for faster-whisper (task=transcribe only)."""
+    language = _language_arg()
+    beam_size = whisper_beam_size()
+    initial_prompt = whisper_initial_prompt()
+
+    use_vad = bool(settings.WHISPER_VAD_FILTER)
+    vad_parameters: Optional[dict] = None
+    duration = audio_duration_seconds(file_path) if use_vad else None
+
+    if use_vad and duration is not None and duration < _SHORT_AUDIO_VAD_SECONDS:
+        # Extremely short voice notes: VAD often removes the only speech segment.
+        use_vad = False
+        logger.info(
+            "Whisper VAD disabled for short audio | duration_s=%.2f threshold_s=%.1f",
+            duration,
+            _SHORT_AUDIO_VAD_SECONDS,
+        )
+    elif use_vad:
+        # Gentler than defaults — better for brief WhatsApp municipal reports.
+        vad_parameters = {
+            "threshold": 0.45,
+            "min_speech_duration_ms": 100,
+            "min_silence_duration_ms": 500,
+            "speech_pad_ms": 400,
+        }
+
+    kwargs: dict[str, Any] = {
+        "task": "transcribe",
+        "language": language,
+        "beam_size": beam_size,
+        "vad_filter": use_vad,
+    }
+    if vad_parameters is not None:
+        kwargs["vad_parameters"] = vad_parameters
+    if initial_prompt is not None:
+        kwargs["initial_prompt"] = initial_prompt
+    return kwargs
 
 
 def transcribe_audio(file_path: str) -> TranscriptionResult:
     """Transcribe an audio file to text (task=transcribe, not translate).
 
+    Returns raw Whisper text — no normalization or translation.
     Synchronous — call via ``asyncio.to_thread`` from async code.
     Concurrent callers share one model; use the WhatsApp voice semaphore to
     limit how many transcriptions run at once.
     """
     model = _get_whisper_model()
-    language = _language_arg()
+    kwargs = build_transcribe_kwargs(file_path)
 
-    logger.info("Whisper transcription started | path_suffix=%s", file_path[-12:])
-    segments, info = model.transcribe(
-        file_path,
-        task="transcribe",
-        language=language,
-        vad_filter=True,
+    logger.info(
+        "Whisper transcription started | path_suffix=%s language=%s beam_size=%s "
+        "vad_filter=%s has_initial_prompt=%s",
+        file_path[-12:],
+        kwargs.get("language") or "auto",
+        kwargs.get("beam_size"),
+        kwargs.get("vad_filter"),
+        "initial_prompt" in kwargs,
     )
+    started = time.perf_counter()
+    segments, info = model.transcribe(file_path, **kwargs)
 
     parts: list[str] = []
     for segment in segments:
@@ -294,14 +387,19 @@ def transcribe_audio(file_path: str) -> TranscriptionResult:
         if piece:
             parts.append(piece)
 
+    # Do not normalize / translate — pass Arabic (or other) text through as-is.
     text = " ".join(parts).strip()
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
     detected_language = getattr(info, "language", None)
     probability = getattr(info, "language_probability", None)
 
+    # Production logs: metadata only — never full private transcript text.
     logger.info(
-        "Whisper transcription complete | language=%s probability=%s text_len=%d",
+        "Whisper transcription complete | language=%s probability=%s "
+        "elapsed_ms=%d text_len=%d",
         detected_language,
         round(float(probability), 3) if probability is not None else None,
+        elapsed_ms,
         len(text),
     )
 

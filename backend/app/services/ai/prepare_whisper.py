@@ -9,11 +9,17 @@ trigger a Hugging Face download:
 Reads WHISPER_MODEL, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE,
 WHISPER_ALLOW_CPU_FALLBACK, HF_HOME, HF_TOKEN.
 
-GPU example:
+GPU example (small):
 
     WHISPER_MODEL=small
     WHISPER_DEVICE=cuda
     WHISPER_COMPUTE_TYPE=float16
+
+GPU example (medium on 6GB, e.g. RTX 3050):
+
+    WHISPER_MODEL=medium
+    WHISPER_DEVICE=cuda
+    WHISPER_COMPUTE_TYPE=int8_float16
 
 CPU example:
 

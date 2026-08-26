@@ -82,11 +82,39 @@ HF_HOME=.cache/huggingface
 WHISPER_MODEL=small
 WHISPER_DEVICE=cuda
 WHISPER_COMPUTE_TYPE=float16
+WHISPER_LANGUAGE_HINT=ar
+WHISPER_BEAM_SIZE=5
+WHISPER_VAD_FILTER=true
+WHISPER_INITIAL_PROMPT=حفرة، زبالة، نفايات، عامود ضو، إنارة، مي، تسريب، طريق، شارع، رصيف، الحمرا، الأشرفية، مار مخايل، بيروت
 WHISPER_LOCAL_FILES_ONLY=true
 WHISPER_PRELOAD=true
 WHISPER_MAX_CONCURRENT=2
 WHISPER_ALLOW_CPU_FALLBACK=false
 HF_HOME=.cache/huggingface
+```
+
+#### RTX 3050 6GB (local / workstation)
+
+Prefer `medium` with mixed precision to fit VRAM:
+
+```env
+WHISPER_MODEL=medium
+WHISPER_DEVICE=cuda
+WHISPER_COMPUTE_TYPE=int8_float16
+WHISPER_LANGUAGE_HINT=ar
+WHISPER_BEAM_SIZE=5
+WHISPER_VAD_FILTER=true
+WHISPER_MAX_CONCURRENT=1
+WHISPER_ALLOW_CPU_FALLBACK=false
+```
+
+`small` + `float16` also works on a 3050 if you need lower latency.
+
+Compare the same voice note across sizes:
+
+```bash
+cd backend
+.venv/bin/python -m app.services.ai.compare_transcription ./sample.ogg --models small,medium --language ar
 ```
 
 `prepare_whisper` validates CUDA when `WHISPER_DEVICE=cuda`. If the host has

@@ -43,11 +43,19 @@ class Settings(BaseSettings):
     AWS_S3_BUCKET: str = "civicpulse-media-dev"
 
     # --- Whisper (speech-to-text) ---
-    # Production CPU MVP default is "small". For GPU set DEVICE=cuda COMPUTE_TYPE=float16.
+    # Model size is env-only (small / medium / …) — no code change needed to switch.
+    # CPU MVP: DEVICE=cpu COMPUTE_TYPE=int8. GPU: cuda + float16 or int8_float16.
     WHISPER_MODEL: str = "small"
     WHISPER_DEVICE: str = "cpu"
     WHISPER_COMPUTE_TYPE: str = "int8"
+    # Force language when set (e.g. "ar"). "auto" lets Whisper detect.
     WHISPER_LANGUAGE_HINT: str = "auto"
+    # Optional domain bias for Lebanese municipal Arabic (empty = unused).
+    WHISPER_INITIAL_PROMPT: str = ""
+    # Beam search size (1 = greedy). Default 5 favors accuracy.
+    WHISPER_BEAM_SIZE: int = 5
+    # Silero VAD; short clips may auto-disable to avoid dropping speech.
+    WHISPER_VAD_FILTER: bool = True
     WHISPER_PRELOAD: bool = False
     # After `python -m app.services.ai.prepare_whisper`, set True in production
     # so end-user voice notes never trigger a Hugging Face download.
