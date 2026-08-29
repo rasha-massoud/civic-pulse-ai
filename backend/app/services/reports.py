@@ -62,13 +62,14 @@ def create_report_from_intake(db: Session, data: WhatsAppReportData) -> Report:
     can merge new reports into existing issues instead of always creating new ones.
     """
     category = map_issue_type_to_category(data.issue_type)
-    severity = map_issue_type_to_severity(data.issue_type)
+    severity = (data.severity or map_issue_type_to_severity(data.issue_type)).title()
     district = (data.location_text or "Beirut").strip()[:150]
     photo_url = data.media_urls[0] if data.media_urls else None
 
-    # TODO: Geocode location_text via MAPS_API_KEY when maps service is added.
-    latitude = BEIRUT_DEFAULT_LAT
-    longitude = BEIRUT_DEFAULT_LNG
+    # Preserve native citizen coordinates. Text-only locations retain the
+    # legacy Beirut fallback until the maps/geocoding service is implemented.
+    latitude = data.latitude if data.latitude is not None else BEIRUT_DEFAULT_LAT
+    longitude = data.longitude if data.longitude is not None else BEIRUT_DEFAULT_LNG
 
     issue = Issue(
         category=category,
@@ -92,17 +93,22 @@ def create_report_from_intake(db: Session, data: WhatsAppReportData) -> Report:
         longitude=longitude,
         photo_url=photo_url,
         language=data.language,
+        ai_summary=data.ai_summary,
+        ai_confidence=data.ai_confidence,
+        ai_image_findings=data.ai_image_findings if data.ai_image_findings else None,
+        ai_uncertainties=data.ai_uncertainties if data.ai_uncertainties else None,
     )
     db.add(report)
     db.commit()
     db.refresh(report)
 
     logger.info(
-        "WhatsApp report persisted | issue_id=%s report_id=%s category=%s district=%s",
+        "WhatsApp report persisted | issue_id=%s report_id=%s category=%s district=%s ai_confidence=%.2f",
         issue.id,
         report.id,
         category,
         district,
+        data.ai_confidence or 0.0,
     )
     return report
 

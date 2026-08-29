@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     HF_CLASSIFICATION_MODEL: str = ""
     HF_EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+    # --- OpenAI (multimodal civic report analysis) ---
+    OPENAI_API_KEY: str = ""
+    OPENAI_MULTIMODAL_MODEL: str = "gpt-4o-mini"
+    OPENAI_MULTIMODAL_TIMEOUT_SECONDS: float = 60.0
+
     # --- Maps (Google Maps API / Mapbox) ---
     MAPS_PROVIDER: str = "mapbox"
     MAPS_API_KEY: str = ""

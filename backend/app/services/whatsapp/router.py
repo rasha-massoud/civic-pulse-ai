@@ -2,19 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.core.config import settings
+from app.services.ai.multimodal import (
+    CitizenLocation,
+    ConversationTurn,
+    ReportImage,
+    analyze_civic_report,
+)
 from app.services.whatsapp.classifier import detect_language
 from app.services.whatsapp.idempotency import get_idempotency_store
 from app.services.whatsapp.inbound import InboundWhatsAppMessage, parse_meta_webhook
 from app.services.whatsapp.language import format_location_text
+from app.services.whatsapp.media import download_media
 from app.services.whatsapp.outbound import send_text_message
-from app.services.whatsapp.schemas import SupportedLanguage
-from app.services.whatsapp.service import WhatsAppConversationService, voice_retry_message
+from app.services.whatsapp.schemas import ConversationStep, SupportedLanguage, WhatsAppSession
+from app.services.whatsapp.service import (
+    WhatsAppConversationService,
+    ai_retry_message,
+    voice_retry_message,
+)
 from app.services.whatsapp.session import get_session_store
 from app.services.whatsapp.voice import transcribe_whatsapp_audio
 
@@ -103,6 +115,105 @@ async def _body_for_conversation(message: InboundWhatsAppMessage) -> tuple[str, 
     return transcript, None
 
 
+async def _images_for_analysis(media_refs: list[str]) -> list[ReportImage]:
+    """Resolve stored Meta references into image inputs for OpenAI."""
+    images: list[ReportImage] = []
+    for media_ref in media_refs[:5]:
+        if media_ref.startswith("meta:"):
+            media_id = media_ref.removeprefix("meta:").strip()
+            if not media_id:
+                continue
+            downloaded = await download_media(media_id)
+            mime_type = downloaded.mime_type or "image/jpeg"
+            if not mime_type.startswith("image/"):
+                raise ValueError(f"Expected image media, received {mime_type}")
+            images.append(
+                ReportImage(content=downloaded.content, mime_type=mime_type)
+            )
+        elif media_ref.startswith(("https://", "http://", "data:image/")):
+            images.append(ReportImage(url=media_ref))
+        else:
+            raise ValueError(f"Unsupported image reference: {media_ref[:30]}")
+    return images
+
+
+async def _analyze_session(session: WhatsAppSession, max_retries: int = 3) -> None:
+    """Run joint text/image/location analysis and update session atomically.
+    
+    Includes retry logic for transient API failures (rate limits, network issues).
+    """
+    if session.ai_analyzed:
+        return
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            images = await _images_for_analysis(session.media_urls)
+            location = CitizenLocation(
+                text=session.location_text,
+                latitude=session.latitude,
+                longitude=session.longitude,
+            )
+            conversation = [
+                ConversationTurn.model_validate(turn)
+                for turn in session.conversation_history
+                if turn.get("role") in {"citizen", "assistant"} and turn.get("text")
+            ]
+
+            result = await asyncio.to_thread(
+                analyze_civic_report,
+                citizen_text=session.description or "",
+                location=location,
+                conversation=conversation,
+                images=images,
+            )
+            conversation_service.apply_multimodal_result(session, result)
+            logger.info(
+                "Multimodal analysis completed | phone=%s category=%s severity=%s confidence=%.2f images=%d",
+                session.phone,
+                result.category.value,
+                result.severity.value,
+                result.confidence,
+                len(images),
+            )
+            return  # Success
+
+        except ValueError as e:
+            # Schema/configuration errors are not retryable
+            logger.error(
+                "Multimodal analysis failed (not retryable) | phone=%s error=%s",
+                session.phone,
+                str(e),
+            )
+            raise
+        except Exception as e:
+            logger.warning(
+                "Multimodal analysis failed (attempt %d/%d) | phone=%s error=%s",
+                attempt,
+                max_retries,
+                session.phone,
+                str(e),
+            )
+            if attempt < max_retries:
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 2s, 4s, 8s
+            else:
+                logger.error(
+                    "Multimodal analysis exhausted retries | phone=%s",
+                    session.phone,
+                )
+                raise
+
+
+async def _ensure_analysis(phone: str) -> WhatsAppSession | None:
+    session = conversation_service.store.get(phone)
+    if (
+        session is not None
+        and session.step == ConversationStep.AWAITING_CONFIRMATION
+        and not session.ai_analyzed
+    ):
+        await _analyze_session(session)
+    return conversation_service.store.get(phone)
+
+
 async def process_inbound_message(message: InboundWhatsAppMessage) -> None:
     """Background worker: download/transcribe (if needed), converse, reply via Meta.
 
@@ -128,6 +239,22 @@ async def process_inbound_message(message: InboundWhatsAppMessage) -> None:
             idempotency.mark_completed(message_id)
             return
 
+        # If this is a confirmation response after a previous analysis failure,
+        # finish analysis before allowing the synchronous service to persist.
+        try:
+            await _ensure_analysis(message.phone)
+        except Exception:
+            logger.exception(
+                "Multimodal analysis failed before confirmation | message_id=%s",
+                message_id,
+            )
+            await send_text_message(
+                to=message.phone,
+                text=ai_retry_message(_preferred_language(message.phone)),
+            )
+            idempotency.mark_completed(message_id)
+            return
+
         media_id = None if message.message_type == "audio" else message.media_id
         media_content_type = (
             None if message.message_type == "audio" else message.media_content_type
@@ -139,7 +266,24 @@ async def process_inbound_message(message: InboundWhatsAppMessage) -> None:
             media_id=media_id,
             media_content_type=media_content_type,
             location_text=location_text,
+            latitude=message.latitude,
+            longitude=message.longitude,
         )
+
+        # A location/image/skip message may have completed evidence collection.
+        # Analyze now so the citizen confirms the AI-generated report, not the
+        # preliminary keyword-classifier summary.
+        try:
+            analyzed_session = await _ensure_analysis(message.phone)
+        except Exception:
+            logger.exception(
+                "Multimodal analysis failed after intake | message_id=%s",
+                message_id,
+            )
+            reply_text = ai_retry_message(_preferred_language(message.phone))
+        else:
+            if analyzed_session is not None and analyzed_session.ai_analyzed:
+                reply_text = conversation_service.confirmation_reply(analyzed_session)
         logger.info(
             "Conversation reply generated | message_id=%s reply_len=%d",
             message_id,

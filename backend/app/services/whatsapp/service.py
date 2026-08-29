@@ -82,6 +82,16 @@ MESSAGES = {
         "en": "Sorry, something went wrong. Please try again in a moment.",
         "ar": "عذراً، صار في مشكلة. حاول مرة تانية بعد شوي.",
     },
+    "ai_error": {
+        "en": (
+            "I couldn't analyze the complete report right now. "
+            "Please try again in a moment; your information is still saved."
+        ),
+        "ar": (
+            "ما قدرت حلّل البلاغ الكامل هلّق. "
+            "جرّب كمان مرة بعد شوي؛ معلوماتك بعدها محفوظة."
+        ),
+    },
 }
 
 
@@ -93,6 +103,11 @@ def _msg(key: str, language: SupportedLanguage, **kwargs: str) -> str:
 def voice_retry_message(language: Optional[SupportedLanguage] = None) -> str:
     """Citizen-facing reply when voice download/transcription fails or is empty."""
     return _msg("voice_unintelligible", language or SupportedLanguage.EN)
+
+
+def ai_retry_message(language: Optional[SupportedLanguage] = None) -> str:
+    """Citizen-facing reply when multimodal analysis cannot complete."""
+    return _msg("ai_error", language or SupportedLanguage.EN)
 
 
 def create_report_from_whatsapp(data: WhatsAppReportData) -> str:
@@ -117,7 +132,12 @@ class WhatsAppConversationService:
     """Handles multi-step WhatsApp intake for a single inbound message."""
 
     def __init__(self, store: Optional[SessionStore] = None) -> None:
-        self.store = store or get_session_store()
+        self._store = store
+
+    @property
+    def store(self) -> SessionStore:
+        """Use an injected store, or resolve the active application store lazily."""
+        return self._store or get_session_store()
 
     def handle_message(
         self,
@@ -126,6 +146,8 @@ class WhatsAppConversationService:
         media_id: Optional[str] = None,
         media_content_type: Optional[str] = None,
         location_text: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
     ) -> str:
         """Process one inbound message and return the reply text."""
         try:
@@ -138,6 +160,14 @@ class WhatsAppConversationService:
 
             if location_text and location_text.strip():
                 session.location_text = location_text.strip()
+            if latitude is not None and longitude is not None:
+                session.latitude = latitude
+                session.longitude = longitude
+
+            if text:
+                session.conversation_history.append(
+                    {"role": "citizen", "text": text}
+                )
 
             # Only treat image media IDs as photo attachments (not voice notes).
             if media_id and media_content_type and media_content_type.startswith("image/"):
@@ -151,7 +181,10 @@ class WhatsAppConversationService:
                     session.media_urls.append(media_ref)
 
             reply = self._advance(session, text)
-            self.store.set(phone, session)
+            # Confirmation/cancellation deletes the completed session. Do not
+            # accidentally recreate it after _advance returns.
+            if self.store.get(phone) is not None:
+                self.store.set(phone, session)
             return reply
         except Exception:
             logger.exception("Failed to handle WhatsApp message from %s", phone)
@@ -233,6 +266,8 @@ class WhatsAppConversationService:
 
     def _handle_confirmation_step(self, session: WhatsAppSession, text: str) -> str:
         if is_confirmation(text):
+            if not session.ai_analyzed:
+                return ai_retry_message(session.language)
             return self._finalize_report(session)
 
         if is_rejection(text):
@@ -269,21 +304,75 @@ class WhatsAppConversationService:
         photo_count = len(session.media_urls)
 
         if session.language == SupportedLanguage.AR:
-            return (
-                "ملخص البلاغ:\n"
-                f"- النوع: {issue_label}\n"
-                f"- الوصف: {session.description or '—'}\n"
-                f"- الموقع: {session.location_text or '—'}\n"
-                f"- الصور: {photo_count}"
-            )
+            # Arabic summary with AI analysis
+            summary_text = "ملخص البلاغ:\n"
+            summary_text += f"- النوع: {issue_label}\n"
+            
+            if session.ai_analyzed and session.ai_summary:
+                summary_text += f"- تحليل الذكاء الاصطناعي: {session.ai_summary}\n"
+                if session.ai_severity:
+                    severity_ar = {
+                        "low": "منخفضة",
+                        "medium": "متوسطة",
+                        "high": "عالية",
+                    }.get(session.ai_severity.lower(), session.ai_severity)
+                    summary_text += f"- الخطورة: {severity_ar}\n"
+                if session.ai_confidence is not None:
+                    summary_text += f"- الثقة: {session.ai_confidence:.0%}\n"
+            else:
+                summary_text += f"- الملخص: {session.ai_summary or session.description or '—'}\n"
+            
+            summary_text += f"- الوصف: {session.description or '—'}\n"
+            summary_text += f"- الموقع: {session.location_text or '—'}\n"
+            summary_text += f"- الصور: {photo_count}"
+            
+            if session.ai_uncertainties:
+                summary_text += f"\n- ملاحظات: {', '.join(session.ai_uncertainties[:2])}"
+            
+            return summary_text
 
-        return (
-            "Report summary:\n"
-            f"- Type: {issue_label}\n"
-            f"- Description: {session.description or '—'}\n"
-            f"- Location: {session.location_text or '—'}\n"
-            f"- Photos: {photo_count}"
-        )
+        # English summary with AI analysis
+        summary_text = "Report summary:\n"
+        summary_text += f"- Type: {issue_label}\n"
+        
+        if session.ai_analyzed and session.ai_summary:
+            summary_text += f"- AI Analysis: {session.ai_summary}\n"
+            if session.ai_severity:
+                severity_en = session.ai_severity.capitalize()
+                summary_text += f"- Severity: {severity_en}\n"
+            if session.ai_confidence is not None:
+                summary_text += f"- Confidence: {session.ai_confidence:.0%}\n"
+        else:
+            summary_text += f"- Summary: {session.ai_summary or session.description or '—'}\n"
+        
+        summary_text += f"- Description: {session.description or '—'}\n"
+        summary_text += f"- Location: {session.location_text or '—'}\n"
+        summary_text += f"- Photos: {photo_count}"
+        
+        if session.ai_uncertainties:
+            summary_text += f"\n- Notes: {'; '.join(session.ai_uncertainties[:2])}"
+        
+        return summary_text
+
+    def confirmation_reply(self, session: WhatsAppSession) -> str:
+        """Render confirmation after multimodal fields have been applied."""
+        return f"{self._build_summary(session)}\n\n{_msg('confirm_prompt', session.language)}"
+
+    def apply_multimodal_result(self, session: WhatsAppSession, result: object) -> None:
+        """Apply a validated StructuredCivicReport without importing AI at module load."""
+        session.issue_type = result.category.value
+        session.description = result.description
+        session.ai_summary = result.summary
+        session.ai_severity = result.severity.value
+        session.ai_confidence = result.confidence
+        session.ai_image_findings = [item.model_dump() for item in result.image_findings]
+        session.ai_uncertainties = list(result.uncertainties)
+        if result.location_text:
+            session.location_text = result.location_text
+        session.latitude = result.latitude
+        session.longitude = result.longitude
+        session.ai_analyzed = True
+        self.store.set(session.phone, session)
 
     def _finalize_report(self, session: WhatsAppSession) -> str:
         report_data = WhatsAppReportData(
@@ -293,6 +382,13 @@ class WhatsAppConversationService:
             location_text=session.location_text or "",
             media_urls=list(session.media_urls),
             language=session.language.value,
+            severity=session.ai_severity,
+            latitude=session.latitude,
+            longitude=session.longitude,
+            ai_summary=session.ai_summary,
+            ai_confidence=session.ai_confidence,
+            ai_image_findings=session.ai_image_findings,
+            ai_uncertainties=session.ai_uncertainties,
         )
         report_id = create_report_from_whatsapp(report_data)
         self.store.delete(session.phone)
