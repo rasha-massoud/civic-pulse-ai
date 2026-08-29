@@ -73,7 +73,7 @@ class Settings(BaseSettings):
 
     # --- OpenAI (multimodal civic report analysis) ---
     OPENAI_API_KEY: str = ""
-    OPENAI_MULTIMODAL_MODEL: str = "gpt-4o-mini"
+    OPENAI_MULTIMODAL_MODEL: str = "gpt-5-mini"
     OPENAI_MULTIMODAL_TIMEOUT_SECONDS: float = 60.0
 
     # --- Maps (Google Maps API / Mapbox) ---

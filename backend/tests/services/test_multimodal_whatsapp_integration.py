@@ -16,7 +16,7 @@ def _analysis() -> StructuredCivicReport:
     return StructuredCivicReport(
         category="water_leak",
         severity="high",
-        language="mixed Lebanese Arabic and English",
+        language="mixed",
         summary="Active water leak reported in Hamra",
         description="The citizen reports flowing water and the image shows water across the road.",
         location_text="Hamra Street, Beirut",
@@ -56,7 +56,7 @@ def test_analyze_session_combines_transcript_image_location_and_conversation(mon
     async def fake_download(media_id: str):
         assert media_id == "image-1"
         return MediaDownload(
-            content=b"image bytes", mime_type="image/jpeg", media_id=media_id
+            content=b"\xff\xd8\xffimage bytes", mime_type="image/jpeg", media_id=media_id
         )
 
     def fake_analyze(**kwargs):
@@ -75,7 +75,7 @@ def test_analyze_session_combines_transcript_image_location_and_conversation(mon
     assert saved.ai_summary == "Active water leak reported in Hamra"
     assert captured["citizen_text"] == "fi may 3am temshe 3al tari2"
     assert captured["location"].latitude == 33.8967
-    assert captured["images"][0].content == b"image bytes"
+    assert captured["images"][0].content == b"\xff\xd8\xffimage bytes"
     assert captured["conversation"][0].role == "citizen"
 
 

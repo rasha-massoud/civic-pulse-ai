@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import base64
 from enum import Enum
-from typing import Any, Iterable, Literal, Sequence
+from typing import Any, ClassVar, Iterable, Literal, Sequence
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -31,6 +32,16 @@ class ReportSeverity(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+
+
+class CitizenLanguage(str, Enum):
+    """Stable, database-safe language codes produced by the model."""
+
+    ENGLISH = "en"
+    ARABIC = "ar"
+    LEBANESE_ARABIC = "ar-lb"
+    ARABIZI = "arabizi"
+    MIXED = "mixed"
 
 
 class CitizenLocation(BaseModel):
@@ -63,12 +74,33 @@ class ReportImage(BaseModel):
     content: bytes | None = None
     mime_type: str = "image/jpeg"
 
+    MAX_BYTES: ClassVar[int] = 10 * 1024 * 1024
+    SUPPORTED_MIME_TYPES: ClassVar[set[str]] = {
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/gif",
+    }
+
     @model_validator(mode="after")
     def exactly_one_source(self) -> "ReportImage":
         if (self.url is None) == (self.content is None):
             raise ValueError("provide exactly one of url or content")
-        if self.content is not None and not self.mime_type.startswith("image/"):
-            raise ValueError("mime_type must be an image MIME type")
+        if self.url is not None:
+            parsed = urlparse(self.url)
+            if parsed.scheme not in {"http", "https", "data"}:
+                raise ValueError("image URL must use http, https, or data")
+            if parsed.scheme == "data" and not self.url.startswith("data:image/"):
+                raise ValueError("data URL must contain an image")
+        if self.content is not None:
+            if not self.content:
+                raise ValueError("image content cannot be empty")
+            if len(self.content) > self.MAX_BYTES:
+                raise ValueError("image content exceeds the 10 MB limit")
+            if self.mime_type not in self.SUPPORTED_MIME_TYPES:
+                raise ValueError("unsupported image MIME type")
+            if not _matches_image_signature(self.content, self.mime_type):
+                raise ValueError("image content does not match its MIME type")
         return self
 
     def as_image_url(self) -> str:
@@ -108,7 +140,9 @@ class StructuredCivicReport(BaseModel):
 
     category: IssueCategory
     severity: ReportSeverity
-    language: str = Field(description="Dominant citizen language, e.g. en, ar, Lebanese Arabic, Arabizi, mixed")
+    language: CitizenLanguage = Field(
+        description="Dominant citizen language: en, ar, ar-lb, arabizi, or mixed"
+    )
     summary: str = Field(description="Short, clear dashboard title/summary")
     description: str = Field(description="Evidence-grounded report description")
     location_text: str | None
@@ -154,6 +188,10 @@ citizen's text or Whisper transcript, uploaded photos, exact location, and prior
 conversation. Understand English, Arabic, Lebanese Arabic, Arabizi, and mixed
 language. Use exactly one provided category.
 
+Language codes: use en for English, ar for Modern Standard Arabic, ar-lb for
+Lebanese Arabic written in Arabic script, arabizi for Arabic written with Latin
+letters/numerals, and mixed when more than one is materially present.
+
 Evidence rules:
 - Never invent an object, damage, cause, address, coordinate, measurement, date,
   identity, or urgency that is not supported by the supplied evidence.
@@ -169,6 +207,21 @@ Evidence rules:
 - Write summary and description in clear English for the municipality while
   preserving important place names exactly as the citizen supplied them.
 """
+
+
+def _matches_image_signature(content: bytes, mime_type: str) -> bool:
+    """Perform a small dependency-free check of supported image formats."""
+    signatures = {
+        "image/jpeg": content.startswith(b"\xff\xd8\xff"),
+        "image/png": content.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/gif": content.startswith((b"GIF87a", b"GIF89a")),
+        "image/webp": (
+            len(content) >= 12
+            and content.startswith(b"RIFF")
+            and content[8:12] == b"WEBP"
+        ),
+    }
+    return signatures.get(mime_type, False)
 
 
 def _format_text(report_input: MultimodalReportInput) -> str:
@@ -239,6 +292,13 @@ class MultimodalReportAnalyzer:
         else:
             result.latitude = None
             result.longitude = None
+        result.location_text = (
+            report_input.location.text if report_input.location else None
+        )
+
+        image_count = len(report_input.images)
+        if any(item.image_index > image_count for item in result.image_findings):
+            raise ValueError("OpenAI returned a finding for a nonexistent image")
         return result
 
 

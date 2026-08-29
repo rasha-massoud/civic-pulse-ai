@@ -1,7 +1,13 @@
 """Multimodal AI analysis endpoint for citizen report intake."""
 
+import asyncio
+import base64
+import binascii
+import logging
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.services.ai.multimodal import (
     CitizenLocation,
@@ -14,38 +20,59 @@ from app.services.ai.multimodal import (
 )
 
 router = APIRouter(prefix="/analyze", tags=["ai"])
+logger = logging.getLogger(__name__)
 
 
 class ImageData(BaseModel):
     """Image for analysis - either URL or base64 data."""
 
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
     url: str | None = Field(default=None, description="Public URL to image")
-    base64: str | None = Field(default=None, description="Base64 encoded image data")
+    base64_data: str | None = Field(
+        default=None,
+        alias="base64",
+        description="Base64 encoded image data",
+    )
     mime_type: str = "image/jpeg"
+
+    @model_validator(mode="after")
+    def exactly_one_source(self) -> "ImageData":
+        if (self.url is None) == (self.base64_data is None):
+            raise ValueError("provide exactly one of url or base64")
+        return self
 
 
 class LocationInput(BaseModel):
     """Location information from citizen."""
 
     text: str | None = None
-    latitude: float | None = None
-    longitude: float | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
 
 
 class ConversationInput(BaseModel):
     """Single turn in conversation."""
 
-    role: str  # "citizen" or "assistant"
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["citizen", "assistant"]
     text: str
 
 
 class AnalyzeReportRequest(BaseModel):
     """Request to analyze a citizen report using multimodal AI."""
 
-    citizen_text: str = Field(description="Direct text or Whisper transcript from citizen")
+    model_config = ConfigDict(extra="forbid")
+
+    citizen_text: str = Field(
+        default="", description="Direct text or Whisper transcript from citizen"
+    )
     location: LocationInput | None = None
     conversation_history: list[ConversationInput] = Field(default_factory=list)
-    images: list[ImageData] = Field(default_factory=list)
+    images: list[ImageData] = Field(default_factory=list, max_length=5)
 
 
 class AnalyzeReportResponse(BaseModel):
@@ -95,7 +122,6 @@ async def analyze_citizen_report(request: AnalyzeReportRequest):
         conversation = [
             ConversationTurn(role=turn.role, text=turn.text)
             for turn in request.conversation_history
-            if turn.role in {"citizen", "assistant"}
         ]
         
         # Build image list
@@ -103,9 +129,11 @@ async def analyze_citizen_report(request: AnalyzeReportRequest):
         for img in request.images:
             if img.url:
                 images.append(ReportImage(url=img.url))
-            elif img.base64:
-                import base64
-                content = base64.b64decode(img.base64)
+            elif img.base64_data:
+                try:
+                    content = base64.b64decode(img.base64_data, validate=True)
+                except (binascii.Error, ValueError) as exc:
+                    raise ValueError("image contains invalid base64 data") from exc
                 images.append(
                     ReportImage(
                         content=content,
@@ -114,7 +142,8 @@ async def analyze_citizen_report(request: AnalyzeReportRequest):
                 )
         
         # Call multimodal analysis
-        result: StructuredCivicReport = analyze_civic_report(
+        result: StructuredCivicReport = await asyncio.to_thread(
+            analyze_civic_report,
             citizen_text=request.citizen_text,
             location=location,
             conversation=conversation,
@@ -124,7 +153,7 @@ async def analyze_citizen_report(request: AnalyzeReportRequest):
         return AnalyzeReportResponse(
             category=result.category.value,
             severity=result.severity.value,
-            language=result.language,
+            language=result.language.value,
             summary=result.summary,
             description=result.description,
             location_text=result.location_text,
@@ -140,8 +169,9 @@ async def analyze_citizen_report(request: AnalyzeReportRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid analysis input: {str(e)}",
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Unexpected multimodal analysis failure")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Analysis failed: {str(e)}",
+            detail="Analysis failed. Please try again later.",
         )

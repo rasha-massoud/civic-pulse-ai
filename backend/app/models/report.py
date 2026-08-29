@@ -32,13 +32,13 @@ class Report(Base):
     photo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     voice_note_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     language: Mapped[str] = mapped_column(String(10), nullable=False)
-    
+
     # OpenAI multimodal analysis fields
     ai_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     ai_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     ai_image_findings: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     ai_uncertainties: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-    
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

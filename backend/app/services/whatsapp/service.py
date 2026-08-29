@@ -367,7 +367,9 @@ class WhatsAppConversationService:
         session.ai_confidence = result.confidence
         session.ai_image_findings = [item.model_dump() for item in result.image_findings]
         session.ai_uncertainties = list(result.uncertainties)
-        if result.location_text:
+        # Citizen-provided location is trusted intake data. The analyzer also
+        # preserves it, but do not let any future analyzer overwrite it here.
+        if not session.location_text and result.location_text:
             session.location_text = result.location_text
         session.latitude = result.latitude
         session.longitude = result.longitude
