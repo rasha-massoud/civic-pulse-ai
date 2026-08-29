@@ -92,6 +92,7 @@ def create_report_from_intake(db: Session, data: WhatsAppReportData) -> Report:
         latitude=latitude,
         longitude=longitude,
         photo_url=photo_url,
+        media_urls=list(data.media_urls) or None,
         language=data.language,
         ai_summary=data.ai_summary,
         ai_confidence=data.ai_confidence,

@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     OPENAI_MULTIMODAL_MODEL: str = "gpt-5-mini"
     OPENAI_MULTIMODAL_TIMEOUT_SECONDS: float = 60.0
 
+    # --- Local report media (single-server MVP; replace with S3 in production) ---
+    LOCAL_MEDIA_DIR: str = "uploads"
+
     # --- Maps (Google Maps API / Mapbox) ---
     MAPS_PROVIDER: str = "mapbox"
     MAPS_API_KEY: str = ""

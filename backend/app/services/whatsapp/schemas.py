@@ -34,7 +34,7 @@ class WhatsAppSession(BaseModel):
     location_text: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    # Compatibility: stores Meta media IDs as "meta:{id}" until S3 media download exists.
+    # Meta IDs are replaced with durable /uploads/... references during analysis.
     media_urls: list[str] = Field(default_factory=list)
     conversation_history: list[dict[str, str]] = Field(default_factory=list)
     ai_analyzed: bool = False

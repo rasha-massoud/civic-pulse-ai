@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import app.services.whatsapp.router as wa_router
 from app.services.ai.multimodal import StructuredCivicReport
@@ -64,6 +65,13 @@ def test_analyze_session_combines_transcript_image_location_and_conversation(mon
         return _analysis()
 
     monkeypatch.setattr(wa_router, "download_media", fake_download)
+    monkeypatch.setattr(
+        wa_router,
+        "store_report_image",
+        lambda content, mime_type: SimpleNamespace(
+            public_url="/uploads/reports/saved.jpg"
+        ),
+    )
     monkeypatch.setattr(wa_router, "analyze_civic_report", fake_analyze)
 
     asyncio.run(wa_router._analyze_session(session))
@@ -77,6 +85,7 @@ def test_analyze_session_combines_transcript_image_location_and_conversation(mon
     assert captured["location"].latitude == 33.8967
     assert captured["images"][0].content == b"\xff\xd8\xffimage bytes"
     assert captured["conversation"][0].role == "citizen"
+    assert saved.media_urls == ["/uploads/reports/saved.jpg"]
 
 
 def test_confirmed_ai_result_maps_to_persistence_payload(monkeypatch):

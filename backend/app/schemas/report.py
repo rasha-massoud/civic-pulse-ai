@@ -15,6 +15,7 @@ class ReportOut(BaseModel):
     latitude: float
     longitude: float
     photo_url: str | None
+    media_urls: list[str] | None
     voice_note_url: str | None
     language: str
     created_at: datetime

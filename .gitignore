@@ -44,8 +44,9 @@ Thumbs.db
 *.sqlite3
 *.db
 
-# --- Uploaded media (local dev only; prod uses S3) ---
+# --- Uploaded media (local dev/MVP only; prod uses S3) ---
 backend/media/
+backend/uploads/
 
 # --- Whisper / Hugging Face model caches ---
 .cache/

@@ -15,6 +15,7 @@ from app.services.ai.multimodal import (
     ReportImage,
     analyze_civic_report,
 )
+from app.services.media_storage import load_report_image, store_report_image
 from app.services.whatsapp.classifier import detect_language
 from app.services.whatsapp.idempotency import get_idempotency_store
 from app.services.whatsapp.inbound import InboundWhatsAppMessage, parse_meta_webhook
@@ -116,9 +117,9 @@ async def _body_for_conversation(message: InboundWhatsAppMessage) -> tuple[str, 
 
 
 async def _images_for_analysis(media_refs: list[str]) -> list[ReportImage]:
-    """Resolve stored Meta references into image inputs for OpenAI."""
+    """Resolve image references for OpenAI and persist temporary Meta media."""
     images: list[ReportImage] = []
-    for media_ref in media_refs[:5]:
+    for index, media_ref in enumerate(media_refs[:5]):
         if media_ref.startswith("meta:"):
             media_id = media_ref.removeprefix("meta:").strip()
             if not media_id:
@@ -127,9 +128,18 @@ async def _images_for_analysis(media_refs: list[str]) -> list[ReportImage]:
             mime_type = downloaded.mime_type or "image/jpeg"
             if not mime_type.startswith("image/"):
                 raise ValueError(f"Expected image media, received {mime_type}")
-            images.append(
-                ReportImage(content=downloaded.content, mime_type=mime_type)
+            image = ReportImage(content=downloaded.content, mime_type=mime_type)
+            stored = await asyncio.to_thread(
+                store_report_image,
+                downloaded.content,
+                mime_type,
             )
+            media_refs[index] = stored.public_url
+            images.append(image)
+        elif media_ref.startswith("/uploads/reports/"):
+            stored = await asyncio.to_thread(load_report_image, media_ref)
+            content = await asyncio.to_thread(stored.path.read_bytes)
+            images.append(ReportImage(content=content, mime_type=stored.mime_type))
         elif media_ref.startswith(("https://", "http://", "data:image/")):
             images.append(ReportImage(url=media_ref))
         else:
@@ -148,6 +158,9 @@ async def _analyze_session(session: WhatsAppSession, max_retries: int = 3) -> No
     for attempt in range(1, max_retries + 1):
         try:
             images = await _images_for_analysis(session.media_urls)
+            # Save durable local references before calling OpenAI so retries do
+            # not depend on Meta's temporary media availability.
+            conversation_service.store.set(session.phone, session)
             location = CitizenLocation(
                 text=session.location_text,
                 latitude=session.latitude,

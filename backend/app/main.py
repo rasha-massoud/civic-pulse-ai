@@ -5,9 +5,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import router as v1_router
 from app.core.config import settings
+from app.services.media_storage import PUBLIC_MEDIA_PREFIX, media_root
 from app.services.whatsapp.router import router as whatsapp_router
 
 logging.basicConfig(
@@ -60,3 +62,8 @@ app.add_middleware(
 
 app.include_router(v1_router, prefix=settings.API_V1_PREFIX)
 app.include_router(whatsapp_router, prefix="/api/whatsapp", tags=["WhatsApp"])
+app.mount(
+    PUBLIC_MEDIA_PREFIX,
+    StaticFiles(directory=media_root(), check_dir=False),
+    name="uploads",
+)
