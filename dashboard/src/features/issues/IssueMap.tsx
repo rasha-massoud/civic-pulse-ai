@@ -2,7 +2,7 @@ import "leaflet/dist/leaflet.css";
 import { MapContainer, Marker, Popup, TileLayer } from "react-leaflet";
 import L from "leaflet";
 import type { IssueDTO } from "@/types";
-import { getPinColor, getTitle, isUrgent } from "./issueView";
+import { getPinColor, getTitle, getDisplayLocation, isUrgent } from "./issueView";
 
 const BEIRUT_CENTER: [number, number] = [33.8938, 35.5018];
 
@@ -89,7 +89,7 @@ export default function IssueMap({ issues, onView }: IssueMapProps) {
                   <p style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.4, marginBottom: 6, color: "#0f172a" }}>
                     {getTitle(issue)}
                   </p>
-                  <p style={{ fontSize: 11, color: "#64748b", marginBottom: 8 }}>{issue.district}</p>
+                  <p style={{ fontSize: 11, color: "#64748b", marginBottom: 8 }}>{getDisplayLocation(issue)}</p>
                   <button
                     onClick={() => onView(issue)}
                     style={{

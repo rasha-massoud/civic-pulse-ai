@@ -1,12 +1,15 @@
 import { AlertTriangle, Calendar, GitMerge, MapPin, User, X } from "lucide-react";
+import { useState } from "react";
 import type { IssueDTO, IssueStatus } from "@/types";
 import { getCategoryConfig } from "./categoryConfig";
 import { StatusBadge } from "./IssueList";
 import {
   formatDate,
   getDescription,
+  getDisplayLocation,
   getDisplayStatus,
   getMergedReports,
+  getOriginalLocation,
   getPhotoUrl,
   getPrimaryReport,
   getTicketNo,
@@ -26,6 +29,7 @@ interface IssueDetailModalProps {
 }
 
 export default function IssueDetailModal({ issue, onClose, onStatusChange, onAssigned }: IssueDetailModalProps) {
+  const [photoLoadFailed, setPhotoLoadFailed] = useState(false);
   const cat = getCategoryConfig(issue.category);
   const photo = getPhotoUrl(issue);
   const urgent = isUrgent(issue.severity);
@@ -37,8 +41,13 @@ export default function IssueDetailModal({ issue, onClose, onStatusChange, onAss
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white border border-slate-200 rounded-xl w-full max-w-2xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
         <div className="relative h-48 bg-slate-100 flex-shrink-0">
-          {photo ? (
-            <img src={photo} alt={getTitle(issue)} className="w-full h-full object-cover" />
+          {photo && !photoLoadFailed ? (
+            <img
+              src={photo}
+              alt={getTitle(issue)}
+              onError={() => setPhotoLoadFailed(true)}
+              className="w-full h-full object-cover"
+            />
           ) : (
             <div className={`w-full h-full flex items-center justify-center ${cat.bg}`}>
               <span className={cat.color}>{cat.icon}</span>
@@ -108,7 +117,7 @@ export default function IssueDetailModal({ issue, onClose, onStatusChange, onAss
 
           <div className="grid grid-cols-2 gap-2.5 mb-5">
             {[
-              { icon: <MapPin size={12} />, label: "District", value: issue.district },
+              { icon: <MapPin size={12} />, label: "District", value: getDisplayLocation(issue) },
               {
                 icon: <User size={12} />,
                 label: "Primary reporter",
@@ -133,6 +142,13 @@ export default function IssueDetailModal({ issue, onClose, onStatusChange, onAss
               </div>
             ))}
           </div>
+
+          {getOriginalLocation(issue) &&
+            getOriginalLocation(issue) !== getDisplayLocation(issue) && (
+              <p className="text-xs text-slate-400 mb-5">
+                Citizen location text: {getOriginalLocation(issue)}
+              </p>
+            )}
 
           <div className="flex flex-wrap items-center gap-3 pt-4 border-t border-slate-100">
             <div>

@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.db.session import get_db
-from app.models.task import Task
 from app.schemas.task import TaskCreate, TaskOut, TaskStatusUpdate
 from app.services import issues as issues_service
 from app.services.tasks import assignment as tasks_service
@@ -21,7 +20,7 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
 
 @router.patch("/{task_id}", response_model=TaskOut)
 def update_task_status(task_id: int, payload: TaskStatusUpdate, db: Session = Depends(get_db)):
-    task = db.get(Task, task_id)
+    task = tasks_service.get_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
     return tasks_service.update_task_status(db, task, payload.status)

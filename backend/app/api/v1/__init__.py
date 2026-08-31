@@ -1,8 +1,10 @@
 from fastapi import APIRouter
 
-from app.api.v1 import auth, issues, reports, tasks
+from app.api.v1 import analyze, auth, health, issues, reports, tasks
 
 router = APIRouter()
+router.include_router(health.router)
+router.include_router(analyze.router)
 router.include_router(issues.router)
 router.include_router(tasks.router)
 router.include_router(reports.router)

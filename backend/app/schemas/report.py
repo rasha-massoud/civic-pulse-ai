@@ -15,6 +15,11 @@ class ReportOut(BaseModel):
     latitude: float
     longitude: float
     photo_url: str | None
+    media_urls: list[str] | None
+    location_text: str | None = None
     voice_note_url: str | None
     language: str
+    # Municipal AI fields (not shown in WhatsApp citizen confirmation).
+    ai_summary: str | None = None
+    ai_confidence: float | None = None
     created_at: datetime

@@ -1,8 +1,10 @@
 import { AlertTriangle, CheckCircle2, Clock, Eye, GitMerge, MapPin, RefreshCw, Search } from "lucide-react";
+import { useState } from "react";
 import type { IssueDTO, IssueStatus } from "@/types";
 import { getCategoryConfig } from "./categoryConfig";
 import {
   getDescription,
+  getDisplayLocation,
   getDisplayStatus,
   getMergedReports,
   getPhotoUrl,
@@ -43,13 +45,15 @@ function MergedBadge({ count }: { count: number }) {
 }
 
 function PhotoOrFallback({ issue }: { issue: IssueDTO }) {
+  const [loadFailed, setLoadFailed] = useState(false);
   const photo = getPhotoUrl(issue);
   const cat = getCategoryConfig(issue.category);
-  if (photo) {
+  if (photo && !loadFailed) {
     return (
       <img
         src={photo}
         alt={getTitle(issue)}
+        onError={() => setLoadFailed(true)}
         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
       />
     );
@@ -93,7 +97,7 @@ function IssueCard({ issue, view, onView, onAssigned }: IssueCardProps) {
               {cat.icon} {issue.category}
             </span>
             <span className="text-slate-300">·</span>
-            <span className="text-[11px] text-slate-400">{issue.district}</span>
+            <span className="text-[11px] text-slate-400">{getDisplayLocation(issue)}</span>
             {merged > 0 && <MergedBadge count={merged} />}
           </div>
         </div>
@@ -159,7 +163,7 @@ function IssueCard({ issue, view, onView, onAssigned }: IssueCardProps) {
 
         <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-100 gap-2">
           <span className="text-[10px] text-slate-400 flex items-center gap-1 truncate">
-            <MapPin size={9} /> {issue.district}
+            <MapPin size={9} /> {getDisplayLocation(issue)}
           </span>
           <TaskBoard issue={issue} onAssigned={onAssigned} />
         </div>
