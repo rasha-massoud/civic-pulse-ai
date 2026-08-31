@@ -1,4 +1,6 @@
 import type { IssueDTO, IssueStatus, ReportDTO } from "@/types";
+import { resolveMediaUrl } from "@/api/config";
+import { displayLocationEn, ensureEnglishPlaces } from "@/utils/locationDisplay";
 
 // Display helpers that bridge the real Issue/Report/Task models to the
 // admin-console UI. Fields the backend doesn't track (title, ticket number,
@@ -26,7 +28,8 @@ export function getTicketNo(id: number): string {
 }
 
 export function getTitle(issue: IssueDTO): string {
-  return `${issue.category} reported in ${issue.district}`;
+  const place = displayLocationEn(issue.district);
+  return `${issue.category} reported in ${place}`;
 }
 
 function byCreatedAtAsc(reports: ReportDTO[]): ReportDTO[] {
@@ -44,11 +47,36 @@ export function getMergedReports(issue: IssueDTO): ReportDTO[] {
 }
 
 export function getDescription(issue: IssueDTO): string {
-  return getPrimaryReport(issue)?.transcribed_text ?? "No description provided.";
+  const report = getPrimaryReport(issue);
+  if (!report) {
+    return "No description provided.";
+  }
+  // Prefer municipal AI summary/description; normalize any leftover Arabic places.
+  const raw = report.ai_summary || report.transcribed_text;
+  if (!raw) {
+    return "No description provided.";
+  }
+  return ensureEnglishPlaces(raw, report.location_text ?? issue.district);
+}
+
+export function getDisplayLocation(issue: IssueDTO): string {
+  return displayLocationEn(issue.district);
+}
+
+export function getOriginalLocation(issue: IssueDTO): string | null {
+  const original = getPrimaryReport(issue)?.location_text?.trim();
+  return original || null;
 }
 
 export function getPhotoUrl(issue: IssueDTO): string | null {
-  return getPrimaryReport(issue)?.photo_url ?? null;
+  const report = getPrimaryReport(issue);
+  if (!report) {
+    return null;
+  }
+  return (
+    resolveMediaUrl(report.photo_url) ??
+    resolveMediaUrl(report.media_urls?.[0] ?? null)
+  );
 }
 
 export function maskPhone(phoneNumber: string): string {

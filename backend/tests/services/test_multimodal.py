@@ -136,3 +136,17 @@ def test_preserves_location_text_and_rejects_nonexistent_image_findings():
     )
     with pytest.raises(ValueError, match="nonexistent image"):
         analyzer.analyze(report_input)
+
+
+def test_keeps_extracted_location_from_transcript_when_no_explicit_location():
+    responses = FakeResponses(
+        _result(location_text="الطريق البحري ببيروت", image_findings=[], latitude=None, longitude=None)
+    )
+    analyzer = MultimodalReportAnalyzer(client=SimpleNamespace(responses=responses))
+    result = analyzer.analyze(
+        MultimodalReportInput(
+            citizen_text="سلام، لقيت في حفرة كتير كبيرة على الطريق البحري ببيروت"
+        )
+    )
+    assert result.location_text == "الطريق البحري ببيروت"
+    assert result.latitude is None

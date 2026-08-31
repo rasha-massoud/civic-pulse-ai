@@ -24,9 +24,11 @@ from app.services.whatsapp.schemas import SupportedLanguage
 def _fresh_stores():
     set_session_store(InMemorySessionStore())
     set_idempotency_store(MessageIdempotencyStore())
+    wa_router.conversation_service = WhatsAppConversationService()
     yield
     set_session_store(InMemorySessionStore())
     set_idempotency_store(MessageIdempotencyStore())
+    wa_router.conversation_service = WhatsAppConversationService()
 
 
 def _audio_payload(
@@ -107,9 +109,17 @@ def test_arabic_transcript_enters_conversation_flow():
     reply = svc.handle_message(phone, arabic)
     session = store.get(phone)
     assert session is not None
-    assert session.description == arabic
+    assert session.description == arabic or session.raw_citizen_text == arabic
+    assert arabic in (session.raw_citizen_text or "")
+    assert "مرحبا" not in (session.raw_citizen_text or "")
     assert session.issue_type == "pothole"
-    assert "موقع" in reply or "وين" in reply or "located" in reply.lower()
+    assert (
+        "موقع" in reply
+        or "وين" in reply
+        or "located" in reply.lower()
+        or "صورة" in reply
+        or "photo" in reply.lower()
+    )
 
 
 def test_english_transcript_enters_conversation_flow():
@@ -123,7 +133,13 @@ def test_english_transcript_enters_conversation_flow():
     session = store.get(phone)
     assert session is not None
     assert session.issue_type == "street_light"
-    assert "Where" in reply or "located" in reply.lower()
+    assert (
+        "Where" in reply
+        or "located" in reply.lower()
+        or "location" in reply.lower()
+        or "street/area" in reply.lower()
+        or "photo" in reply.lower()
+    )
 
 
 def test_audio_is_not_treated_as_photo_attachment():
@@ -268,7 +284,12 @@ def test_webhook_text_still_works(monkeypatch):
     response = client.post("/api/whatsapp/webhook", json=_text_payload("hi"))
     assert response.status_code == 200
     assert sent
-    assert "CivicPulse" in sent[0] or "infrastructure" in sent[0].lower()
+    assert (
+        "CivicPulse" in sent[0]
+        or "infrastructure" in sent[0].lower()
+        or "issue" in sent[0].lower()
+        or "مشكلة" in sent[0]
+    )
 
 
 def test_webhook_image_and_location_still_parse():

@@ -8,6 +8,7 @@ the service returns a validated object suitable for the report persistence layer
 from __future__ import annotations
 
 import base64
+import re
 from enum import Enum
 from typing import Any, ClassVar, Iterable, Literal, Sequence
 from urllib.parse import urlparse
@@ -15,6 +16,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.config import settings
+from app.services.location_quality import is_meaningful_location
 
 
 class IssueCategory(str, Enum):
@@ -143,11 +145,51 @@ class StructuredCivicReport(BaseModel):
     language: CitizenLanguage = Field(
         description="Dominant citizen language: en, ar, ar-lb, arabizi, or mixed"
     )
-    summary: str = Field(description="Short, clear dashboard title/summary")
-    description: str = Field(description="Evidence-grounded report description")
-    location_text: str | None
-    latitude: float | None = Field(default=None, ge=-90, le=90)
-    longitude: float | None = Field(default=None, ge=-180, le=180)
+    summary: str = Field(description="Short, clear English dashboard title/summary")
+    description: str = Field(
+        description="Evidence-grounded English report description for the municipality"
+    )
+    citizen_issue_label: str = Field(
+        default="",
+        description=(
+            "Short citizen-facing issue title in the citizen's language "
+            "(e.g. Arabic: تراكم نفايات على الطريق; English: Garbage piled on the road). "
+            "Not a raw Whisper transcript."
+        ),
+    )
+    citizen_summary: str = Field(
+        default="",
+        description=(
+            "Short natural citizen-facing description in the citizen's conversation "
+            "language for WhatsApp confirmation. Polish unclear transcripts using all "
+            "evidence (text + images + location). Do not invent unsupported facts. "
+            "Never paste a raw garbled Whisper transcript."
+        ),
+    )
+    location_text: str | None = Field(
+        default=None,
+        description=(
+            "Meaningful citizen-provided place with identifying detail: street + name, "
+            "neighborhood/area, landmark, or relative phrase (طريق الحمرا, شارع الحمرا, "
+            "الطريق البحري ببيروت, قرب الجامعة الأميركية, near AUB main gate, سوديكو, "
+            "Sodeco). Named neighborhoods alone are valid. "
+            "Return null for generic fragments alone such as طريق، طريقة، شارع، road, "
+            "street, near. Do NOT invent or substitute a different place spelling. "
+            "Do NOT require GPS."
+        ),
+    )
+    latitude: float | None = Field(
+        default=None,
+        ge=-90,
+        le=90,
+        description="GPS latitude only when the citizen supplied coordinates; else null",
+    )
+    longitude: float | None = Field(
+        default=None,
+        ge=-180,
+        le=180,
+        description="GPS longitude only when the citizen supplied coordinates; else null",
+    )
     image_findings: list[ImageFinding]
     uncertainties: list[str]
     confidence: float = Field(ge=0, le=1)
@@ -183,30 +225,132 @@ class StructuredCivicReport(BaseModel):
 
 
 SYSTEM_PROMPT = """You are CivicPulse AI, a municipal report analyst for Beirut.
-Create one structured report by jointly interpreting all supplied evidence: the
-citizen's text or Whisper transcript, uploaded photos, exact location, and prior
-conversation. Understand English, Arabic, Lebanese Arabic, Arabizi, and mixed
-language. Use exactly one provided category.
+Create one structured report by jointly interpreting ALL supplied evidence: the
+citizen's text or Whisper transcript (which may be garbled), uploaded photos,
+any separate location payload, and prior conversation. Understand English,
+Arabic, Lebanese Arabic, Arabizi, and mixed language. Use exactly one category.
 
 Language codes: use en for English, ar for Modern Standard Arabic, ar-lb for
 Lebanese Arabic written in Arabic script, arabizi for Arabic written with Latin
 letters/numerals, and mixed when more than one is materially present.
 
-Evidence rules:
-- Never invent an object, damage, cause, address, coordinate, measurement, date,
-  identity, or urgency that is not supported by the supplied evidence.
-- Treat citizen statements as claims and images as observations. Reconcile them;
-  do not analyze either source in isolation.
-- Copy supplied coordinates exactly. Never infer coordinates from an image or
-  place name. If none were supplied, return null coordinates.
+Classification rules:
+- Jointly weigh transcript claims and image observations. If the transcript is
+  unclear/garbled but photos clearly show an issue (e.g. piled garbage), choose
+  the category supported by the image evidence.
+- Do not keep an incorrect keyword category when stronger multimodal evidence
+  supports a different category.
+- Do not override a clear, explicit citizen statement merely because of an image;
+  reconcile all evidence and lower confidence when they conflict.
+
+Location rules (critical):
+- location_text must be a MEANINGFUL identifying place: street + name, area,
+  neighborhood, landmark, or relative phrase (طريق الحمرا, شارع الحمرا,
+  الطريق البحري ببيروت, جنب الجامعة الأميركية, قرب صيدلية X, near AUB main gate,
+  Hamra Street, سوديكو, Sodeco). Named areas/neighborhoods alone ARE valid.
+- Return null when the only cue is a generic fragment: طريق، طريقة، شارع، road,
+  street, near, here — these are NOT valid locations.
+- Extract location_text from the FULL accumulated transcript/conversation when
+  a real place is mentioned across turns (issue in message 1, place in message 2).
+- Do NOT invent a more precise address than the citizen gave.
+- Do NOT silently "correct" an uncertain Whisper spelling into a different known
+  place name. If the place is unclear, leave location_text null.
+- latitude/longitude are OPTIONAL. Copy exactly only when the citizen sent
+  coordinates or a Maps pin. Never geocode. Null coordinates if none supplied.
+
+Citizen-facing vs municipal text:
+- summary + description: clear English for the municipality dashboard.
+- citizen_issue_label + citizen_summary: short natural wording in the citizen's
+  language for WhatsApp confirmation (Arabic for ar/ar-lb; English for en).
+- citizen_summary must NOT be a raw Whisper transcript. If the transcript is
+  garbled, rewrite a clear summary from the combined evidence without inventing
+  unsupported facts.
+- NEVER output filler such as "لا يوجد معلومات كافية" / "not enough information"
+  when prior conversation turns already describe an issue — merge all turns.
+- Preserve important place names; do not invent urgency, identities, or causes.
+
+Other evidence rules:
+- Treat the conversation as ONE report. Later messages enrich earlier ones;
+  a location-only follow-up must not erase category/description from earlier text.
+- Never invent an object, damage, cause, measurement, date, or identity that is
+  not supported by the supplied evidence.
 - When evidence conflicts or is insufficient, say so in uncertainties, lower
   confidence, and use category "other" if no listed category is well supported.
-- Severity means apparent municipal impact: low (limited/non-urgent), medium
-  (meaningful obstruction or service failure), high (visible immediate safety,
-  flooding, or major public-health risk). Do not exaggerate severity.
-- Write summary and description in clear English for the municipality while
-  preserving important place names exactly as the citizen supplied them.
+- Severity: low (limited/non-urgent), medium (meaningful obstruction or service
+  failure), high (immediate safety, flooding, or major public-health risk).
 """
+
+
+# Deterministic fallback when the model returns null despite an obvious place cue.
+_AR_LOCATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # على/في/ب + الطريق/طريق/شارع + name (+ optional ببيروت / بـcity)
+    re.compile(
+        r"(?:على|في|ب)\s*"
+        r"(ال?طريق\s+[\u0600-\u06FFA-Za-z0-9]+(?:\s+ب[\u0600-\u06FFA-Za-z0-9]+)?|"
+        r"طريق\s+[\u0600-\u06FFA-Za-z0-9]+|"
+        r"شارع\s+[\u0600-\u06FFA-Za-z0-9]+|"
+        r"ساحة\s+[\u0600-\u06FFA-Za-z0-9]+|"
+        r"حي\s+[\u0600-\u06FFA-Za-z0-9]+)",
+        re.UNICODE,
+    ),
+    # جنب / قرب / عند + landmark phrase
+    re.compile(
+        r"(?:جنب|قرب|عند)\s+[\u0600-\u06FFA-Za-z0-9][\u0600-\u06FFA-Za-z0-9\s]{1,40}",
+        re.UNICODE,
+    ),
+    # Trailing proclitic neighborhood/place: ... بسوديكو (not a hardcoded list)
+    re.compile(
+        r"(?:^|[\s،,])ب([\u0600-\u06FF]{3,})\s*$",
+        re.UNICODE,
+    ),
+)
+
+_EN_LOCATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:near|at|on|in|by|beside|outside)\s+"
+        r"(?:the\s+)?"
+        r"[A-Za-z0-9][A-Za-z0-9\s,'\-]{1,50}"
+        r"(?:street|st\.?|road|rd\.?|avenue|ave\.?|boulevard|blvd\.?|gate|square|"
+        r"campus|pharmacy|hospital|school|university|aub|hamra)?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b[A-Za-z][A-Za-z0-9\s,'\-]{0,30}\b(?:street|st\.?|road|rd\.?)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def extract_location_text_from_transcript(text: str) -> str | None:
+    """Best-effort textual location from a citizen transcript (no geocoding).
+
+    Used as a safety net when the multimodal model returns null location_text
+    despite an obvious street/landmark phrase in the message.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+
+    for pattern in _AR_LOCATION_PATTERNS:
+        match = pattern.search(cleaned)
+        if match:
+            # Trailing ب + place uses a capturing group for the bare name.
+            if match.lastindex:
+                phrase = match.group(1).strip()
+            else:
+                phrase = match.group(0).strip()
+                phrase = re.sub(r"^(?:على|في|ب)\s*", "", phrase).strip()
+            if phrase and is_meaningful_location(phrase):
+                return phrase
+
+    for pattern in _EN_LOCATION_PATTERNS:
+        match = pattern.search(cleaned)
+        if match:
+            phrase = match.group(0).strip(" ,.-")
+            if phrase and is_meaningful_location(phrase):
+                return phrase
+
+    return None
 
 
 def _matches_image_signature(content: bytes, mime_type: str) -> bool:
@@ -234,10 +378,16 @@ def _format_text(report_input: MultimodalReportInput) -> str:
     turns = [turn.model_dump() for turn in report_input.conversation]
     return (
         "Analyze this citizen report as a single body of evidence.\n"
-        f"Citizen text / transcript: {report_input.citizen_text!r}\n"
-        f"Citizen-provided location: {location_lines!r}\n"
-        f"Conversation context: {turns!r}\n"
-        f"Attached image count: {len(report_input.images)}"
+        f"Accumulated citizen text / transcripts (all turns):\n"
+        f"{report_input.citizen_text!r}\n"
+        f"Separate location payload (may be empty — still extract places from "
+        f"the accumulated transcripts): {location_lines!r}\n"
+        f"Full conversation context: {turns!r}\n"
+        f"Attached image count: {len(report_input.images)}\n"
+        "Merge every citizen turn into one report. A later location-only message "
+        "must keep category/description from earlier turns. "
+        "If any turn mentions a street/area/neighborhood/landmark, set "
+        "location_text to that phrase even when GPS is null."
     )
 
 
@@ -292,9 +442,32 @@ class MultimodalReportAnalyzer:
         else:
             result.latitude = None
             result.longitude = None
-        result.location_text = (
-            report_input.location.text if report_input.location else None
+
+        # Explicit citizen location text wins over model output. When the citizen
+        # only mentioned a place inside their transcript/voice note, keep the
+        # model's extracted location_text; if the model returned null, fall back
+        # to a deterministic phrase extractor (still no geocoding).
+        provided_location = (
+            report_input.location.text.strip()
+            if report_input.location and report_input.location.text
+            else ""
         )
+        if provided_location and is_meaningful_location(provided_location):
+            result.location_text = provided_location
+        elif provided_location and not is_meaningful_location(provided_location):
+            # Explicit but generic fragments (e.g. "طريق") do not count.
+            result.location_text = None
+        elif not is_meaningful_location(result.location_text):
+            result.location_text = None
+            fallback = extract_location_text_from_transcript(report_input.citizen_text)
+            if not fallback:
+                for turn in report_input.conversation:
+                    if turn.role == "citizen":
+                        fallback = extract_location_text_from_transcript(turn.text)
+                        if fallback:
+                            break
+            if is_meaningful_location(fallback):
+                result.location_text = fallback
 
         image_count = len(report_input.images)
         if any(item.image_index > image_count for item in result.image_findings):

@@ -31,6 +31,9 @@ class Report(Base):
     longitude: Mapped[float] = mapped_column(Float, nullable=False)
     photo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     media_urls: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
+    # Original citizen-provided location phrase (may be Arabic). Issue.district
+    # holds the English dashboard display form.
+    location_text: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     voice_note_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     language: Mapped[str] = mapped_column(String(10), nullable=False)
 

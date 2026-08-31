@@ -30,12 +30,20 @@ class WhatsAppSession(BaseModel):
     step: ConversationStep = ConversationStep.GREETING
     language: SupportedLanguage = SupportedLanguage.EN
     issue_type: Optional[str] = None
+    # Municipal English description after AI; may briefly hold raw text pre-analysis.
     description: Optional[str] = None
+    # Immutable citizen/Whisper evidence — never used as polished confirmation text.
+    raw_citizen_text: Optional[str] = None
+    # Polished WhatsApp confirmation lines (citizen language).
+    citizen_summary: Optional[str] = None
+    citizen_issue_label: Optional[str] = None
     location_text: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     # Meta IDs are replaced with durable /uploads/... references during analysis.
     media_urls: list[str] = Field(default_factory=list)
+    # True after an image is attached or the citizen explicitly skips the photo step.
+    photo_resolved: bool = False
     conversation_history: list[dict[str, str]] = Field(default_factory=list)
     ai_analyzed: bool = False
     ai_summary: Optional[str] = None

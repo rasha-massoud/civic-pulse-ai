@@ -20,6 +20,8 @@ def _analysis() -> StructuredCivicReport:
         language="mixed",
         summary="Active water leak reported in Hamra",
         description="The citizen reports flowing water and the image shows water across the road.",
+        citizen_issue_label="Water leak",
+        citizen_summary="There is an active water leak on Hamra Street.",
         location_text="Hamra Street, Beirut",
         latitude=33.8967,
         longitude=35.4822,
@@ -96,6 +98,7 @@ def test_confirmed_ai_result_maps_to_persistence_payload(monkeypatch):
         step=ConversationStep.AWAITING_CONFIRMATION,
         language="en",
         media_urls=["meta:image-1"],
+        photo_resolved=True,
     )
     service.apply_multimodal_result(session, _analysis())
     captured = {}

@@ -13,8 +13,12 @@ export interface ReportDTO {
   latitude: number;
   longitude: number;
   photo_url: string | null;
+  media_urls: string[] | null;
+  location_text: string | null;
   voice_note_url: string | null;
   language: string;
+  ai_summary: string | null;
+  ai_confidence: number | null;
   created_at: string;
 }
 

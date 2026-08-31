@@ -15,12 +15,14 @@ from app.services.whatsapp.idempotency import MessageIdempotencyStore, set_idemp
 from app.services.whatsapp.media import MediaDownload
 from app.services.whatsapp.session import InMemorySessionStore, set_session_store
 from app.services.whatsapp import voice as voice_mod
+from app.services.whatsapp.service import WhatsAppConversationService
 
 
 @pytest.fixture(autouse=True)
 def _fresh_stores():
     set_session_store(InMemorySessionStore())
     set_idempotency_store(MessageIdempotencyStore())
+    wa_router.conversation_service = WhatsAppConversationService()
     transcription_mod.reset_whisper_model()
     voice_mod.reset_whisper_semaphore()
     yield
@@ -28,6 +30,7 @@ def _fresh_stores():
     voice_mod.reset_whisper_semaphore()
     set_session_store(InMemorySessionStore())
     set_idempotency_store(MessageIdempotencyStore())
+    wa_router.conversation_service = WhatsAppConversationService()
 
 
 def test_health_distinguishes_api_and_whisper_ready(monkeypatch):

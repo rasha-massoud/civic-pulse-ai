@@ -15,8 +15,9 @@ from app.services.ai.multimodal import (
     ReportImage,
     analyze_civic_report,
 )
+from app.services.location_quality import is_meaningful_location
 from app.services.media_storage import load_report_image, store_report_image
-from app.services.whatsapp.classifier import detect_language
+from app.services.whatsapp.classifier import detect_language, is_confirmation, is_rejection
 from app.services.whatsapp.idempotency import get_idempotency_store
 from app.services.whatsapp.inbound import InboundWhatsAppMessage, parse_meta_webhook
 from app.services.whatsapp.language import format_location_text
@@ -108,12 +109,45 @@ async def _body_for_conversation(message: InboundWhatsAppMessage) -> tuple[str, 
         language = detect_language(transcript)
 
     logger.info(
-        "Voice note transcribed | message_id=%s text_len=%d language=%s",
+        "Voice note transcribed | message_id=%s text_len=%d language=%s transcript=%s",
         message.message_id,
         len(transcript),
         result.language,
+        transcript[:500],
     )
     return transcript, None
+
+
+def _session_has_extractable_evidence(session: WhatsAppSession) -> bool:
+    """True when real report evidence exists (not greetings in history alone)."""
+    return bool(
+        (session.raw_citizen_text or session.description or "").strip()
+        or session.media_urls
+    )
+
+
+def _accumulated_citizen_text(session: WhatsAppSession) -> str:
+    """Full multi-turn citizen evidence for multimodal analysis."""
+    raw = (session.raw_citizen_text or "").strip()
+    if raw:
+        return raw
+    parts: list[str] = []
+    for turn in session.conversation_history:
+        if turn.get("role") == "citizen" and (turn.get("text") or "").strip():
+            parts.append(turn["text"].strip())
+    if parts:
+        return "\n".join(parts)
+    return (session.description or "").strip()
+
+
+def _needs_image_reanalysis(session: WhatsAppSession) -> bool:
+    """Re-run AI when images arrived after a text-only early extraction."""
+    if not session.media_urls:
+        return False
+    # Findings empty after analysis usually means text-only prior pass.
+    return not session.ai_image_findings and any(
+        ref.startswith(("meta:", "/uploads/reports/")) for ref in session.media_urls
+    )
 
 
 async def _images_for_analysis(media_refs: list[str]) -> list[ReportImage]:
@@ -128,6 +162,12 @@ async def _images_for_analysis(media_refs: list[str]) -> list[ReportImage]:
             mime_type = downloaded.mime_type or "image/jpeg"
             if not mime_type.startswith("image/"):
                 raise ValueError(f"Expected image media, received {mime_type}")
+            logger.info(
+                "WhatsApp image downloaded | media_id=%s bytes=%d mime=%s",
+                media_id,
+                len(downloaded.content),
+                mime_type,
+            )
             image = ReportImage(content=downloaded.content, mime_type=mime_type)
             stored = await asyncio.to_thread(
                 store_report_image,
@@ -135,6 +175,12 @@ async def _images_for_analysis(media_refs: list[str]) -> list[ReportImage]:
                 mime_type,
             )
             media_refs[index] = stored.public_url
+            logger.info(
+                "WhatsApp image stored | media_id=%s public_url=%s filesystem=%s",
+                media_id,
+                stored.public_url,
+                getattr(stored, "path", "-"),
+            )
             images.append(image)
         elif media_ref.startswith("/uploads/reports/"):
             stored = await asyncio.to_thread(load_report_image, media_ref)
@@ -149,11 +195,26 @@ async def _images_for_analysis(media_refs: list[str]) -> list[ReportImage]:
 
 async def _analyze_session(session: WhatsAppSession, max_retries: int = 3) -> None:
     """Run joint text/image/location analysis and update session atomically.
-    
+
     Includes retry logic for transient API failures (rate limits, network issues).
+    Always sends the accumulated multi-turn citizen evidence, not only the
+    latest fragment.
     """
-    if session.ai_analyzed:
-        return
+    citizen_text = _accumulated_citizen_text(session)
+    if citizen_text and not session.raw_citizen_text:
+        session.raw_citizen_text = citizen_text
+    if citizen_text and not (session.description or "").strip():
+        session.description = citizen_text
+
+    logger.info(
+        "AI analysis started | phone=%s text_len=%d location=%s images=%d "
+        "already_analyzed=%s",
+        session.phone,
+        len(citizen_text),
+        (session.location_text or "-")[:80],
+        len(session.media_urls),
+        session.ai_analyzed,
+    )
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -162,7 +223,9 @@ async def _analyze_session(session: WhatsAppSession, max_retries: int = 3) -> No
             # not depend on Meta's temporary media availability.
             conversation_service.store.set(session.phone, session)
             location = CitizenLocation(
-                text=session.location_text,
+                text=session.location_text
+                if is_meaningful_location(session.location_text)
+                else None,
                 latitude=session.latitude,
                 longitude=session.longitude,
             )
@@ -174,19 +237,23 @@ async def _analyze_session(session: WhatsAppSession, max_retries: int = 3) -> No
 
             result = await asyncio.to_thread(
                 analyze_civic_report,
-                citizen_text=session.description or "",
+                citizen_text=citizen_text,
                 location=location,
                 conversation=conversation,
                 images=images,
             )
             conversation_service.apply_multimodal_result(session, result)
+            missing = conversation_service.missing_required_fields(session)
             logger.info(
-                "Multimodal analysis completed | phone=%s category=%s severity=%s confidence=%.2f images=%d",
+                "Multimodal analysis completed | phone=%s category=%s location=%s "
+                "severity=%s confidence=%.2f images=%d missing=%s",
                 session.phone,
                 result.category.value,
+                (session.location_text or result.location_text or "-")[:80],
                 result.severity.value,
                 result.confidence,
                 len(images),
+                missing,
             )
             return  # Success
 
@@ -216,14 +283,43 @@ async def _analyze_session(session: WhatsAppSession, max_retries: int = 3) -> No
                 raise
 
 
-async def _ensure_analysis(phone: str) -> WhatsAppSession | None:
+async def _ensure_analysis(phone: str, *, allow_early: bool = False) -> WhatsAppSession | None:
+    """Run multimodal extraction when needed; skip duplicate calls.
+
+    Early extraction (allow_early=True) runs during intake so a single rich
+    voice/text message can fill category + location before we ask follow-ups.
+    Re-runs when new citizen evidence cleared ai_analyzed (multi-turn merge).
+    Confirmation-time analysis still runs when images were added after the
+    text-only pass.
+    """
     session = conversation_service.store.get(phone)
-    if (
-        session is not None
-        and session.step == ConversationStep.AWAITING_CONFIRMATION
-        and not session.ai_analyzed
-    ):
-        await _analyze_session(session)
+    if session is None:
+        return None
+
+    at_confirmation = session.step == ConversationStep.AWAITING_CONFIRMATION
+    if not allow_early and not at_confirmation:
+        return session
+
+    if not _session_has_extractable_evidence(session) and not session.media_urls:
+        return session
+
+    if session.ai_analyzed:
+        if at_confirmation and _needs_image_reanalysis(session):
+            logger.info(
+                "Re-running AI analysis with images | phone=%s images=%d",
+                phone,
+                len(session.media_urls),
+            )
+            session.ai_analyzed = False
+        else:
+            logger.info(
+                "Skipping duplicate AI analysis | phone=%s step=%s",
+                phone,
+                session.step.value,
+            )
+            return session
+
+    await _analyze_session(session)
     return conversation_service.store.get(phone)
 
 
@@ -252,26 +348,33 @@ async def process_inbound_message(message: InboundWhatsAppMessage) -> None:
             idempotency.mark_completed(message_id)
             return
 
-        # If this is a confirmation response after a previous analysis failure,
-        # finish analysis before allowing the synchronous service to persist.
-        try:
-            await _ensure_analysis(message.phone)
-        except Exception:
-            logger.exception(
-                "Multimodal analysis failed before confirmation | message_id=%s",
-                message_id,
-            )
-            await send_text_message(
-                to=message.phone,
-                text=ai_retry_message(_preferred_language(message.phone)),
-            )
-            idempotency.mark_completed(message_id)
-            return
+        existing = conversation_service.store.get(message.phone)
+        at_confirmation = (
+            existing is not None
+            and existing.step == ConversationStep.AWAITING_CONFIRMATION
+        )
+        body_stripped = (body or "").strip()
+        is_confirm_decision = at_confirmation and (
+            is_confirmation(body_stripped) or is_rejection(body_stripped)
+        )
 
         media_id = None if message.message_type == "audio" else message.media_id
         media_content_type = (
             None if message.message_type == "audio" else message.media_content_type
         )
+
+        # A confirmation decision is terminal conversation control. It must never
+        # enter AI analysis or be reinterpreted as evidence/location.
+        if is_confirm_decision:
+            reply_text = conversation_service.handle_message(
+                phone=message.phone,
+                body=body,
+            )
+            if reply_text:
+                await send_text_message(to=message.phone, text=reply_text)
+                logger.info("Meta WhatsApp reply sent | message_id=%s", message_id)
+            idempotency.mark_completed(message_id)
+            return
 
         reply_text = conversation_service.handle_message(
             phone=message.phone,
@@ -283,20 +386,45 @@ async def process_inbound_message(message: InboundWhatsAppMessage) -> None:
             longitude=message.longitude,
         )
 
-        # A location/image/skip message may have completed evidence collection.
-        # Analyze now so the citizen confirms the AI-generated report, not the
-        # preliminary keyword-classifier summary.
+        session_after = conversation_service.store.get(message.phone)
+        if session_after is None:
+            logger.info(
+                "Conversation reply generated | message_id=%s reply_len=%d terminal=%s",
+                message_id,
+                len(reply_text or ""),
+                session_after is None,
+            )
+            if reply_text:
+                await send_text_message(to=message.phone, text=reply_text)
+                logger.info("Meta WhatsApp reply sent | message_id=%s", message_id)
+            if message.message_type == "audio":
+                logger.info("Voice processing completed | message_id=%s", message_id)
+            idempotency.mark_completed(message_id)
+            return
+
+        should_enrich = (
+            _session_has_extractable_evidence(session_after)
+            and (
+                not session_after.ai_analyzed
+                or _needs_image_reanalysis(session_after)
+            )
+        )
+
         try:
-            analyzed_session = await _ensure_analysis(message.phone)
+            if should_enrich:
+                await _analyze_session(session_after)
         except Exception:
             logger.exception(
                 "Multimodal analysis failed after intake | message_id=%s",
                 message_id,
             )
-            reply_text = ai_retry_message(_preferred_language(message.phone))
+            if session_after.step == ConversationStep.AWAITING_CONFIRMATION:
+                reply_text = ai_retry_message(_preferred_language(message.phone))
         else:
-            if analyzed_session is not None and analyzed_session.ai_analyzed:
-                reply_text = conversation_service.confirmation_reply(analyzed_session)
+            session_after = conversation_service.store.get(message.phone)
+            if should_enrich and session_after is not None:
+                reply_text = conversation_service.decide_next_reply(session_after)
+                conversation_service.store.set(session_after.phone, session_after)
         logger.info(
             "Conversation reply generated | message_id=%s reply_len=%d",
             message_id,
